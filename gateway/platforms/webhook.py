@@ -434,6 +434,7 @@ class WebhookAdapter(BasePlatformAdapter):
             or request.headers.get("X-GitLab-Event", "")
             or payload.get("event_type", "")
             or payload.get("type", "")
+            or payload.get("event", "")
             or "unknown"
         )
         allowed_events = route_config.get("events", [])
@@ -488,7 +489,10 @@ class WebhookAdapter(BasePlatformAdapter):
             "X-GitHub-Delivery",
             request.headers.get(
                 "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+                request.headers.get(
+                    "X-Wallapop-Batch-Id",
+                    request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+                ),
             ),
         )
 
@@ -672,6 +676,25 @@ class WebhookAdapter(BasePlatformAdapter):
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
             return hmac.compare_digest(gl_token, secret)
+
+        # Wallapop chat-listener: X-Wallapop-Signature = sha256=<hex>
+        # Signed content is: "{X-Wallapop-Timestamp}.{raw_body}".
+        wallapop_sig = request.headers.get("X-Wallapop-Signature", "")
+        wallapop_ts = request.headers.get("X-Wallapop-Timestamp", "")
+        if wallapop_sig or wallapop_ts:
+            if not (wallapop_sig and wallapop_ts):
+                return False
+            try:
+                ts = int(wallapop_ts)
+            except (TypeError, ValueError):
+                return False
+            if abs(int(time.time()) - ts) > 300:
+                logger.warning("[webhook] Wallapop signature timestamp outside replay window")
+                return False
+            expected = "sha256=" + hmac.new(
+                secret.encode(), wallapop_ts.encode() + b"." + body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(wallapop_sig, expected)
 
         # Generic: X-Webhook-Signature = <hex HMAC-SHA256>
         generic_sig = request.headers.get("X-Webhook-Signature", "")

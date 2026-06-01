@@ -336,3 +336,51 @@ class TestGitHubCommentDelivery:
         # Delivery info is retained after send() so interim status messages
         # don't strand the final response (TTL-based cleanup happens on POST).
         assert chat_id in adapter._delivery_info
+
+
+class TestWallapopWebhook:
+
+    @pytest.mark.asyncio
+    async def test_event_field_and_batch_id_are_supported(self):
+        routes = {
+            "wallapop": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["wallapop.messages.received"],
+                "prompt": "Wallapop batch: {batchId}",
+            }
+        }
+        adapter = _make_adapter(routes)
+        adapter.handle_message = AsyncMock()
+        app = _create_app(adapter)
+        payload = {
+            "event": "wallapop.messages.received",
+            "batchId": "batch-001",
+            "messages": [],
+        }
+
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/wallapop",
+                json=payload,
+                headers={"X-Wallapop-Batch-Id": "batch-001"},
+            )
+            duplicate = await cli.post(
+                "/webhooks/wallapop",
+                json=payload,
+                headers={"X-Wallapop-Batch-Id": "batch-001"},
+            )
+            first_data = await first.json()
+            duplicate_data = await duplicate.json()
+
+        assert first.status == 202
+        assert first_data == {
+            "status": "accepted",
+            "route": "wallapop",
+            "event": "wallapop.messages.received",
+            "delivery_id": "batch-001",
+        }
+        assert duplicate.status == 200
+        assert duplicate_data == {
+            "status": "duplicate",
+            "delivery_id": "batch-001",
+        }
